@@ -1,0 +1,16 @@
+{
+    "users": {
+        "6281234567890": {
+            "name": "Eko Nugroho",
+            "features": ["text", "image", "voice"]
+        },
+        "6281519624321": {
+            "name": "Echo",
+            "features": ["text", "image", "voice"]
+        },
+        "6282222222222": {
+            "name": "Testing User",
+            "features": ["text"]
+        }
+    }
+} 

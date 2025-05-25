@@ -1,0 +1,15 @@
+{
+    "6281234567890": {
+      "name": "Eko Nugroho",
+      "features": ["text", "image", "voice"]
+    },
+    "6281111111111": {
+      "name": "Aulia",
+      "features": ["text", "image"]
+    },
+    "6282222222222": {
+      "name": "Testing User",
+      "features": ["text"]
+    }
+  }
+  

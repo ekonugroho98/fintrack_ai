@@ -1,0 +1,15 @@
+{
+    "users": {
+        "6281234567890": {
+            "features": ["text", "image", "voice"],
+            "name": "Test User"
+        }
+    },
+    "processing": {
+        "batch_size": 10,
+        "polling_interval": 5000
+    },
+    "logging": {
+        "level": "info"
+    }
+} 
