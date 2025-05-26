@@ -14,19 +14,156 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /**
+ * Tambahkan user baru ke database
+ * @param {Object} user - Data user
+ * @param {string} user.phone_number - Nomor WhatsApp user
+ * @param {string} user.name - Nama user
+ * @param {string} user.account_id - ID akun user (UUID)
+ * @param {string} user.role - Peran user ('owner'|'editor'|'viewer')
+ * @param {boolean} user.enable_text
+ * @param {boolean} user.enable_image
+ * @param {boolean} user.enable_voice
+ * @param {boolean} user.can_view_summary
+ * @param {boolean} user.can_add_transaction
+ * @param {boolean} user.can_delete_transaction
+ */
+export async function addUserToDB({
+  phone_number,
+  name,
+  account_id = null,
+  role = 'editor',
+  enable_text = true,
+  enable_image = false,
+  enable_voice = false,
+  can_view_summary = true,
+  can_add_transaction = true,
+  can_delete_transaction = false
+}) {
+  const payload = {
+    phone_number,
+    name,
+    account_id,
+    role,
+    enable_text,
+    enable_image,
+    enable_voice,
+    can_view_summary,
+    can_add_transaction,
+    can_delete_transaction,
+    created_at: new Date().toISOString()
+  };
+
+  logger.info({ event: 'db_add_user_attempt', payload });
+
+  const { error, data } = await supabase
+    .from('users')
+    .insert([payload])
+    .select();
+
+  if (error) {
+    logger.error({ event: 'db_add_user_error', error: error.message, payload });
+    throw error;
+  }
+
+  logger.info({ event: 'db_add_user_success', data });
+  return data[0]; // data[0].id adalah UUID user
+}
+
+/**
+ * Update data user
+ * @param {string} phoneNumber - Nomor WhatsApp user
+ * @param {Object} updates - Data yang akan diupdate
+ */
+export async function updateUserInDB(phoneNumber, updates) {
+  const payload = {
+    ...updates,
+    updated_at: new Date().toISOString()
+  };
+
+  logger.info({
+    event: 'db_update_user_attempt',
+    phoneNumber,
+    payload
+  });
+
+  const { error, data: updated } = await supabase
+    .from('users')
+    .update(payload)
+    .eq('phone_number', phoneNumber)
+    .select();
+
+  if (error) {
+    logger.error({
+      event: 'db_update_user_error',
+      error: error.message,
+      phoneNumber,
+      payload
+    });
+    throw error;
+  }
+
+  logger.info({
+    event: 'db_update_user_success',
+    updated
+  });
+
+  return updated[0];
+}
+
+/**
+ * Dapatkan data user berdasarkan nomor WhatsApp
+ * @param {string} phoneNumber - Nomor WhatsApp user
+ */
+export async function getUserFromDB(phoneNumber) {
+  const { error, data } = await supabase
+    .from('users')
+    .select('*')
+    .eq('phone_number', phoneNumber);
+
+  logger.info({
+    event: 'db_get_user_raw',
+    phoneNumber,
+    data,
+    error
+  });
+
+  if (error) {
+    logger.error({
+      event: 'db_get_user_error',
+      error: error.message,
+      phoneNumber
+    });
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    throw new Error('No rows found for phoneNumber: ' + phoneNumber);
+  }
+  if (data.length > 1) {
+    throw new Error('Multiple rows found for phoneNumber: ' + phoneNumber);
+  }
+
+  return data[0];
+}
+
+/**
  * Simpan transaksi ke database Supabase
  * @param {Object} trx - Objek transaksi
- * @param {string} trx.phoneNumber - Nomor pengguna
+ * @param {string} trx.user_id - UUID user
+ * @param {string} trx.account_id - UUID akun
  * @param {string} trx.source - 'text' | 'image' | 'voice'
- * @param {Object} trx.data - { category, amount, date, description }
+ * @param {Object} trx.data - { category, amount, date, description, type, merchant }
  */
-export async function saveTransactionToDB({ phoneNumber, source, data }) {
+export async function saveTransactionToDB({ user_id, account_id, source, data }) {
   const payload = {
-    user_id: phoneNumber,
-    category: data.category || 'Lainnya',
+    user_id,
+    account_id,
+    transaction_date: data.date ? data.date.slice(0, 10) : new Date().toISOString().slice(0, 10),
     amount: data.amount || 0,
+    type: data.type || 'expense',
+    category: data.category || 'Lainnya',
     description: data.description || '',
-    date: data.date || new Date().toISOString(),
+    merchant: data.merchant || null,
     source: source,
     created_at: new Date().toISOString()
   };
@@ -56,6 +193,19 @@ export async function saveTransactionToDB({ phoneNumber, source, data }) {
   });
 
   return inserted[0];
+}
+
+export async function createAccount(name) {
+  const payload = {
+    name,
+    created_at: new Date().toISOString()
+  };
+  const { error, data } = await supabase
+    .from('accounts')
+    .insert([payload])
+    .select();
+  if (error) throw error;
+  return data[0];
 }
 
 export default supabase;

@@ -5,8 +5,10 @@ import processVoice from './processor/processVoice.js';
 import './healthServer.js'; // menjalankan health endpoint di background
 import dotenv from 'dotenv';
 import { logger } from './utils/logger.js';
+import { startRetryWorker } from './utils/retryWorker.js';
 
 dotenv.config();
+startRetryWorker(); // interval default: 60 detik
 
 try {
     await redisClient.connect();

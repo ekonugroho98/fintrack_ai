@@ -2,9 +2,9 @@ import { isFeatureAllowed } from '../utils/userConfig.js';
 import redisClient from '../utils/redis.js';
 import { logger } from '../utils/logger.js';
 import apiClient from '../utils/apiClient.js';
+import { saveTransactionToDB } from '../utils/db.js';
 
 function formatCurrency(amount) {
-  // Pastikan amount adalah angka
   const numAmount = Number(amount);
   if (isNaN(numAmount)) {
     return 'Rp0,00';
@@ -18,7 +18,6 @@ function formatCurrency(amount) {
 }
 
 function formatDate(dateStr) {
-  // Jika dateStr tidak valid, gunakan tanggal hari ini
   if (!dateStr) {
     dateStr = new Date().toISOString();
   }
@@ -43,23 +42,23 @@ function formatTransactionMessage(transaction) {
 
 export default async function processImage(data) {
   const { from, content, caption, messageId, timestamp, mimetype } = data;
+  const phoneNumber = from.replace('@s.whatsapp.net', '');
 
-  // Log received data
-  logger.info({
-    event: 'received_image_data',
-    from,
-    hasContent: !!content,
-    contentLength: content?.length,
-    caption,
-    messageId,
-    timestamp,
-    mimetype
-  });
+  // Ambil user dari DB (harus dapat UUID user dan account_id)
+  let user;
+  try {
+    user = await import('../utils/db.js').then(m => m.getUserFromDB(phoneNumber));
+  } catch (err) {
+    logger.error({ event: 'db_get_user_error', phoneNumber, error: err.message });
+    await redisClient.publish('whatsapp-response', JSON.stringify({
+      to: from,
+      message: '❌ Nomor Anda belum terdaftar. Silakan daftar dulu dengan DAFTAR#Nama.'
+    }));
+    return;
+  }
 
-  // Validasi izin fitur
-  if (!isFeatureAllowed(from, 'image')) {
+  if (!isFeatureAllowed(phoneNumber, 'image')) {
     logger.warn(`Fitur image tidak diizinkan untuk ${from}`);
-    // Kirim pesan error ke gateway
     await redisClient.publish('whatsapp-response', JSON.stringify({
       to: from,
       message: '❌ Maaf, Anda tidak memiliki akses untuk fitur ini.'
@@ -76,8 +75,7 @@ export default async function processImage(data) {
     });
 
     const result = await apiClient.processImage(content, caption, from);
-    
-    // Log detail response dari AI service
+
     logger.info({
       event: 'ai_service_response',
       raw_response: result,
@@ -85,27 +83,25 @@ export default async function processImage(data) {
       from: from
     });
 
-    // Handle both single transaction and array of transactions
     const transactions = Array.isArray(result?.data) ? result.data : [result?.data];
 
-    // Validate and format each transaction
     const validatedTransactions = transactions.map(transaction => ({
       date: transaction?.date || new Date().toISOString(),
       category: transaction?.category || 'Lainnya',
       amount: transaction?.amount || 0,
-      description: transaction?.description || caption || 'Tidak ada deskripsi'
+      description: transaction?.description || caption || 'Tidak ada deskripsi',
+      type: transaction?.type || 'expense',
+      merchant: transaction?.merchant || null
     }));
 
-    // Log hasil validasi
     logger.info({
       event: 'validated_transactions',
       original: result,
       validated: validatedTransactions
     });
 
-    // Simpan setiap transaksi ke Redis
     for (const transaction of validatedTransactions) {
-      await redisClient.setLastTransaction(from, {
+      await redisClient.setLastTransaction(phoneNumber, {
         type: 'image',
         raw: content,
         caption,
@@ -114,19 +110,40 @@ export default async function processImage(data) {
         timestamp,
         mimetype
       });
+
+      try {
+        await saveTransactionToDB({
+          user_id: user.id,
+          account_id: user.account_id,
+          source: 'image',
+          data: transaction
+        });
+      } catch (dbError) {
+        logger.error({
+          event: 'db_save_error',
+          from,
+          error: dbError.message,
+          stack: dbError.stack,
+          fallbackData: transaction
+        });
+    
+        await redisClient.publisher.rPush('failed:transactions', JSON.stringify({
+          from: phoneNumber,
+          source: 'image',
+          data: transaction,
+          timestamp: Date.now()
+        }));
+      }
     }
 
-    // Format pesan response untuk multiple transactions
     const responseMessage = `✅ Transaksi dicatat!\n\n${validatedTransactions.map(formatTransactionMessage).join('\n\n')}`;
 
-    // Log response message untuk debugging
     logger.info({
       event: 'formatted_response',
       message: responseMessage,
       validated_transactions: validatedTransactions
     });
 
-    // Kirim hasil ke gateway
     await redisClient.publish('whatsapp-response', JSON.stringify({
       to: from,
       message: responseMessage
@@ -143,13 +160,12 @@ export default async function processImage(data) {
       hasContent: !!content,
       contentLength: content?.length
     });
-    
-    // Kirim pesan error ke gateway
+
     await redisClient.publish('whatsapp-response', JSON.stringify({
       to: from,
       message: '❌ Maaf, terjadi kesalahan saat memproses gambar Anda.'
     }));
-    
+
     throw err;
   }
 }
