@@ -17,51 +17,37 @@ class ApiClient {
     });
   }
 
-  async retry(fn, retries = 3, delay = 10000) {
-    try {
-      return await this.circuitBreaker.execute(fn);
-    } catch (error) {
-      // Handle rate limiting error
-      if (error.message.includes('429') || error.message.includes('Too Many Requests')) {
-        const waitTime = delay * 2;
-        logger.warn({
-          event: 'rate_limit_hit',
-          message: `Rate limit hit, waiting ${waitTime}ms before retry`,
-          retriesLeft: retries,
-          error: error.message
-        });
-        
-        if (retries > 0) {
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          return this.retry(fn, retries - 1, waitTime);
+  async retry(fn, maxRetries = 3) {
+    let lastError;
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        if (error.message.includes('404')) {
+          // Jika 404, langsung throw karena endpoint memang tidak ada
+          throw error;
         }
+        // Tunggu sebelum retry
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
       }
-
-      if (retries === 0) {
-        logger.error({
-          event: 'max_retries_exceeded',
-          message: 'Maximum retry attempts reached',
-          error: error.message,
-          stack: error.stack
-        });
-        throw error;
-      }
-      
-      logger.warn({
-        event: 'request_failed',
-        message: `Request failed, retrying... (${retries} attempts left)`,
-        error: error.message
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return this.retry(fn, retries - 1, delay * 2);
     }
+    throw lastError;
   }
 
   async processText(text, phoneNumber) {
     return this.retry(async () => {
       try {
-        const response = await fetch(`${this.baseUrl}/api/process_expense_keuangan`, {
+        const url = `${this.baseUrl}/api/process_text`;
+        logger.info({
+          event: 'api_request',
+          method: 'POST',
+          url,
+          endpoint: '/api/process_text',
+          phoneNumber
+        });
+
+        const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -102,13 +88,16 @@ class ApiClient {
   async processConsultation({ message, phone_number }) {
     return this.retry(async () => {
       try {
+        const url = `${this.baseUrl}/api/consult`;
         logger.info({
-          event: 'sending_consultation_request',
-          phone_number,
-          messageLength: message.length
+          event: 'api_request',
+          method: 'POST',
+          url,
+          endpoint: '/api/consult',
+          phone_number
         });
 
-        const response = await fetch(`${this.baseUrl}/api/consult_keuangan`, {
+        const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -163,6 +152,16 @@ class ApiClient {
   async processImage(base64Image, caption, phoneNumber) {
     return this.retry(async () => {
       try {
+        const url = `${this.baseUrl}/api/process_image`;
+        logger.info({
+          event: 'api_request',
+          method: 'POST',
+          url,
+          endpoint: '/api/process_image',
+          phoneNumber,
+          hasCaption: !!caption
+        });
+
         // Convert base64 to buffer
         const imageBuffer = Buffer.from(base64Image, 'base64');
 
@@ -174,13 +173,7 @@ class ApiClient {
           formData.append('caption', caption);
         }
 
-        logger.info({
-          event: 'sending_image_to_ai',
-          phoneNumber,
-          hasCaption: !!caption
-        });
-
-        const response = await fetch(`${this.baseUrl}/api/process_image_expense_keuangan`, {
+        const response = await fetch(url, {
           method: 'POST',
           body: formData
         });
@@ -213,6 +206,15 @@ class ApiClient {
 
   async processVoice(audioUrl, phoneNumber) {
     return this.retry(async () => {
+      const url = `${this.baseUrl}/api/process_voice`;
+      logger.info({
+        event: 'api_request',
+        method: 'POST',
+        url,
+        endpoint: '/api/process_voice',
+        phoneNumber
+      });
+
       // Download audio from URL
       const audioResponse = await fetch(audioUrl);
       if (!audioResponse.ok) {
@@ -225,7 +227,7 @@ class ApiClient {
       formData.append('voice', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav');
       formData.append('phone_number', phoneNumber);
 
-      const response = await fetch(`${this.baseUrl}/api/process_voice_expense_keuangan`, {
+      const response = await fetch(url, {
         method: 'POST',
         body: formData
       });
@@ -245,6 +247,62 @@ class ApiClient {
       baseUrl: this.baseUrl,
       circuitBreaker: this.circuitBreaker.getStatus()
     };
+  }
+
+  async detectIntent(data) {
+    return this.retry(async () => {
+      const url = `${this.baseUrl}/api/intent/detect`;
+      logger.info({
+        event: 'api_request',
+        method: 'POST',
+        url,
+        endpoint: '/api/intent/detect',
+        phone_number: data.phone_number,
+        text_length: data.text?.length
+      });
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          text: data.text,
+          phone_number: data.phone_number
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        logger.error({
+          event: 'intent_detection_api_error',
+          status: response.status,
+          error: errorData
+        });
+        throw new Error(`HTTP ${response.status}: ${JSON.stringify(errorData)}`);
+      }
+
+      const result = await response.json();
+      logger.info({
+        event: 'intent_detection_success',
+        result
+      });
+      return result;
+    });
+  }
+
+  async checkHealth() {
+    try {
+      const response = await fetch(`${this.baseUrl}/health`);
+      return response.ok;
+    } catch (error) {
+      logger.error({
+        event: 'ai_service_health_check_failed',
+        error: error.message
+      });
+      return false;
+    }
   }
 }
 

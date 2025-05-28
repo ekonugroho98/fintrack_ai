@@ -208,4 +208,43 @@ export async function createAccount(name) {
   return data[0];
 }
 
+export async function getTransactionsByUser({ phoneNumber, accountId, fromDate, toDate }) {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('user_id', phoneNumber)
+    .eq('account_id', accountId)
+    .gte('date', fromDate)
+    .lte('date', toDate)
+    .order('date', { ascending: false });
+
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteTransactionByDetails({ account_id, date, amount, description, category }) {
+  const db = get_db(); // gunakan koneksi yang kamu gunakan di db.js
+
+  const query = `
+    DELETE FROM transactions
+    WHERE account_id = $1
+      AND date::date = $2::date
+      AND amount = $3
+      AND description = $4
+      AND category = $5
+    LIMIT 1;
+  `;
+
+  const values = [account_id, date, amount, description, category];
+
+  const result = await db.query(query, values);
+  if (result.rowCount === 0) {
+    throw new Error('Tidak ada transaksi yang cocok untuk dihapus.');
+  }
+
+  return result;
+}
+
+
+
 export default supabase;
