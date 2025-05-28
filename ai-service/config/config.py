@@ -1,5 +1,7 @@
 import os
 from dotenv import load_dotenv
+from supabase import create_client
+from database import get_db
 
 load_dotenv()
 
@@ -26,5 +28,15 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO" if ENV == "production" else "DEBUG")
+
+# Supabase Configuration
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # gunakan anon key untuk client
+
+# Mendapatkan instance Supabase
+supabase = get_db()
+
+# Contoh query
+response = supabase.table('your_table').select("*").execute()
 
 
