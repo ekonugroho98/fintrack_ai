@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { logger } from './logger.js';
+import { Pool } from 'pg';
 
 dotenv.config();
 
@@ -12,6 +13,10 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL
+});
 
 /**
  * Tambahkan user baru ke database
@@ -206,6 +211,87 @@ export async function createAccount(name) {
     .select();
   if (error) throw error;
   return data[0];
+}
+
+// Get user by phone number
+export async function getUserByPhone(phoneNumber) {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM users WHERE phone_number = $1',
+      [phoneNumber]
+    );
+    
+    if (result.rows.length === 0) {
+      return null;
+    }
+    
+    return result.rows[0];
+  } catch (error) {
+    logger.error({
+      event: 'db_get_user_error',
+      error: error.message,
+      phoneNumber
+    });
+    throw error;
+  }
+}
+
+// Create new account
+export async function createAccount(name) {
+  try {
+    const result = await pool.query(
+      'INSERT INTO accounts (name) VALUES ($1) RETURNING *',
+      [name]
+    );
+    return result.rows[0];
+  } catch (error) {
+    logger.error({
+      event: 'db_create_account_error',
+      error: error.message
+    });
+    throw error;
+  }
+}
+
+// Add new user
+export async function addUserToDB(userData) {
+  try {
+    logger.info({
+      event: 'db_add_user_attempt',
+      payload: userData
+    });
+
+    const result = await pool.query(
+      `INSERT INTO users (
+        phone_number, name, account_id, role,
+        enable_text, enable_image, enable_voice,
+        can_view_summary, can_add_transaction, can_delete_transaction,
+        created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [
+        userData.phone_number,
+        userData.name,
+        userData.account_id,
+        userData.role,
+        userData.enable_text,
+        userData.enable_image,
+        userData.enable_voice,
+        userData.can_view_summary,
+        userData.can_add_transaction,
+        userData.can_delete_transaction,
+        new Date().toISOString()
+      ]
+    );
+
+    return result.rows[0];
+  } catch (error) {
+    logger.error({
+      event: 'db_add_user_error',
+      payload: userData,
+      error: error.message
+    });
+    throw error;
+  }
 }
 
 export default supabase;

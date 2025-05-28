@@ -7,23 +7,17 @@ import { makeWASocket,
     jidNormalizedUser,
 } from '@whiskeysockets/baileys'
 import pino from 'pino'
-import NodeCache from 'node-cache'
-import qrcode from 'qrcode-terminal'
+import { CONFIG } from './config.js'
+import { middlewareManager } from './middleware/index.js'
+import { stateManager } from './state/index.js'
+import { metrics, startMetricsServer } from './monitoring/index.js'
 import { subscribe } from './utils/redis.js'
 
 import handleTextMessage from './handler/text.js'
 import handleImageMessage from './handler/image.js'
 import handleVoiceMessage from './handler/voice.js'
 
-// Configuration
-const CONFIG = {
-  AUTH_FOLDER: 'auth',
-  LOG_LEVEL: 'info',
-  MESSAGE_TIMEOUT: 30000, // 30 seconds
-  MAX_RETRIES: 3
-}
-
-// Initialize logger with pino-pretty
+// Initialize logger
 const logger = pino({
   transport: {
     target: 'pino-pretty',
@@ -32,29 +26,28 @@ const logger = pino({
       translateTime: 'SYS:standard',
       ignore: 'pid,hostname',
     }
-  }
+  },
+  level: CONFIG.LOG_LEVEL
 })
 
-const msgRetryCounterCache = new NodeCache()
-
-// Rate limiting cache
-const rateLimitCache = new NodeCache({
-  stdTTL: 60, // 1 minute
-  checkperiod: 120
-})
-
-// Check rate limit
-function checkRateLimit(userId) {
-  const key = `rate_limit_${userId}`
-  const currentCount = rateLimitCache.get(key) || 0
-  
-  if (currentCount >= 10) { // Max 10 messages per minute
-    return false
-  }
-  
-  rateLimitCache.set(key, currentCount + 1)
-  return true
+// Start metrics server if enabled
+if (CONFIG.ENABLE_METRICS) {
+  startMetricsServer()
 }
+
+// Add basic middleware
+middlewareManager
+  .use(async (ctx, next) => {
+    const startTime = Date.now()
+    await next()
+    const duration = (Date.now() - startTime) / 1000
+    metrics.observeProcessingTime(ctx.msg.messageType, duration)
+  })
+  .use(async (ctx, next) => {
+    const userId = jidNormalizedUser(ctx.msg.key.remoteJid)
+    stateManager.incrementMessageCount(userId)
+    await next()
+  })
 
 async function startBot() {
   try {
@@ -67,28 +60,29 @@ async function startBot() {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
       },
-      msgRetryCounterCache,
-      logger: pino({ level: 'silent' }), // Set to silent to avoid duplicate logs
+      logger: pino({ level: 'silent' }),
     })
 
     // Subscribe to worker responses
     await subscribe('whatsapp-response', async (message) => {
       try {
-        const { to, message: responseMessage } = JSON.parse(message);
-        await sock.sendMessage(to, { text: responseMessage });
+        const { to, message: responseMessage } = JSON.parse(message)
+        await sock.sendMessage(to, { text: responseMessage })
+        metrics.incrementMessage('response')
         logger.info({
           event: 'response_sent',
           to,
           message: responseMessage
-        });
+        })
       } catch (error) {
+        metrics.incrementError('response')
         logger.error({
           event: 'response_error',
           error: error.message,
           stack: error.stack
-        });
+        })
       }
-    });
+    })
 
     sock.ev.on('creds.update', saveCreds)
 
@@ -101,12 +95,14 @@ async function startBot() {
       if (connection === 'close') {
         const reason = lastDisconnect?.error?.output?.statusCode
         if (reason === DisconnectReason.loggedOut) {
+          metrics.incrementError('logout')
           logger.warn({ 
             event: 'connection_closed',
             reason: 'logged_out',
             message: 'Session logout. Scan ulang QR.'
           })
         } else {
+          metrics.incrementError('disconnect')
           logger.warn({ 
             event: 'connection_closed',
             reason: 'disconnected',
@@ -128,51 +124,32 @@ async function startBot() {
       if (!msg.message || msg.key.fromMe) return
 
       const from = jidNormalizedUser(msg.key.remoteJid)
-      
-      // Check rate limit
-      if (!checkRateLimit(from)) {
-        logger.warn(`Rate limit exceeded for user ${from}`)
-        await sock.sendMessage(from, { text: '⚠️ Terlalu banyak pesan. Mohon tunggu sebentar.' })
-        return
-      }
-
       const msgType = Object.keys(msg.message)[0]
-      logger.info({
-        event: 'message_received',
-        from,
-        type: msgType,
-        timestamp: new Date().toISOString()
-      })
-
+      
       try {
-        await sock.sendPresenceUpdate('composing', from)
-
-        // Set timeout for message handling
-        const messagePromise = (async () => {
-          if (msgType === 'conversation' || msgType === 'extendedTextMessage') {
-            await handleTextMessage(sock, msg)
-          } else if (msgType === 'imageMessage') {
-            await handleImageMessage(sock, msg)
-          } else if (msgType === 'audioMessage') {
-            await handleVoiceMessage(sock, msg)
-          } else {
-            logger.warn({
-              event: 'unsupported_message_type',
-              from,
-              type: msgType
-            })
-            await sock.sendMessage(from, { text: `⚠️ Pesan tipe "${msgType}" belum didukung.` })
-          }
-        })()
-
-        // Add timeout
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Message handling timeout')), CONFIG.MESSAGE_TIMEOUT)
-        )
-
-        await Promise.race([messagePromise, timeoutPromise])
-
+        // Process through middleware
+        const context = await middlewareManager.processMessage(msg, sock)
+        
+        // Update metrics
+        metrics.incrementMessage(msgType)
+        
+        // Handle message based on type
+        if (msgType === 'conversation' || msgType === 'extendedTextMessage') {
+          await handleTextMessage(sock, msg)
+        } else if (msgType === 'imageMessage') {
+          await handleImageMessage(sock, msg)
+        } else if (msgType === 'audioMessage') {
+          await handleVoiceMessage(sock, msg)
+        } else {
+          logger.warn({
+            event: 'unsupported_message_type',
+            from,
+            type: msgType
+          })
+          await sock.sendMessage(from, { text: `⚠️ Pesan tipe "${msgType}" belum didukung.` })
+        }
       } catch (err) {
+        metrics.incrementError('message_processing')
         logger.error({
           event: 'message_error',
           from,
@@ -188,18 +165,19 @@ async function startBot() {
     })
 
   } catch (err) {
+    metrics.incrementError('startup')
     logger.error({
       event: 'startup_error',
       error: err.message,
       stack: err.stack
     })
-    // Retry startup after delay
     setTimeout(startBot, 5000)
   }
 }
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (err) => {
+  metrics.incrementError('uncaught_exception')
   logger.error({
     event: 'uncaught_exception',
     error: err.message,
@@ -209,6 +187,7 @@ process.on('uncaughtException', (err) => {
 
 // Handle unhandled rejections
 process.on('unhandledRejection', (reason, promise) => {
+  metrics.incrementError('unhandled_rejection')
   logger.error({
     event: 'unhandled_rejection',
     reason: reason,

@@ -3,6 +3,8 @@ import redisClient from '../utils/redis.js';
 import { logger } from '../utils/logger.js';
 import apiClient from '../utils/apiClient.js';
 import { saveTransactionToDB, addUserToDB, getUserFromDB, createAccount } from '../utils/db.js';
+import { processReportQuery } from './processReport.js';
+import { processTransaction } from './processTransaction.js';
 
 function formatCurrency(amount) {
   const numAmount = Number(amount);
@@ -192,108 +194,112 @@ export default async function processText(data) {
   }
 
   try {
-    logger.info(`Mengirim request ke AI service untuk user ${from}`);
-    const result = await apiClient.processText(text, from);
-
     logger.info({
-      event: 'ai_service_response',
-      raw_response: result,
-      text_input: text,
-      from
+      event: 'text_processing_start',
+      from,
+      text
     });
 
-    if (result?.message?.includes('konsultasi')) {
-      logger.info('Message is a consultation, processing with consultation endpoint');
-      const consultationResult = await apiClient.processConsultation({
-        message: text,
-        phone_number: from
-      });
+    // Get message classification from AI service
+    const classification = await apiClient.classifyMessage(text, from);
+    
+    logger.info({
+      event: 'message_classified',
+      from,
+      text,
+      classification
+    });
 
-      await redisClient.publish('whatsapp-response', JSON.stringify({
-        to: from,
-        message: consultationResult.reply || 'Maaf, saya tidak bisa menjawab pertanyaan tersebut.'
-      }));
-      return;
+    // Process based on intent
+    switch (classification.intent) {
+      case 'REPORT':
+        if (classification.confidence >= 0.7) {
+          return processReportQuery({
+            ...data,
+            context: classification.context
+          });
+        }
+        break;
+
+      case 'TRANSACTION':
+        if (classification.confidence >= 0.7) {
+          // Process transaction with extracted context
+          return processTransaction(data, classification.context);
+        }
+        break;
+
+      case 'CONSULTATION':
+        if (classification.confidence >= 0.7) {
+          // Process consultation
+          const result = await apiClient.processConsultation({
+            text,
+            phone_number: from
+          });
+
+          await redisClient.publish('whatsapp-response', JSON.stringify({
+            to: from,
+            message: result.reply || 'Maaf, saya tidak bisa menjawab pertanyaan tersebut.'
+          }));
+          return;
+        }
+        break;
+
+      case 'NONE':
+      default:
+        // If confidence is low or intent is NONE, ask for clarification
+        await redisClient.publish('whatsapp-response', JSON.stringify({
+          to: from,
+          message: '❓ Maaf, saya tidak yakin dengan maksud pesan Anda. Mohon berikan detail lebih lanjut.'
+        }));
+        return;
     }
 
-    if (result?.message?.includes('tidak terdeteksi')) {
-      logger.info('Message is not detected as transaction or consultation');
-      await redisClient.publish('whatsapp-response', JSON.stringify({
-        to: from,
-        message: result.message
-      }));
-      return;
-    }
-
-    const validatedResult = {
-      date: result?.data?.date || new Date().toISOString(),
-      category: result?.data?.category || 'Lainnya',
-      amount: result?.data?.amount || 0,
-      description: result?.data?.description || text,
-      type: result?.data?.type || 'expense',
-      merchant: result?.data?.merchant || null
-    };
-
-    logger.info({
-      event: 'validated_result',
-      original: result,
-      validated: validatedResult
-    });
-
-    await redisClient.setLastTransaction(phoneNumber, {
-      type: 'text', raw: text, result: validatedResult, messageId, timestamp
-    });
-
-    // Simpan ke database Supabase (pakai UUID user dan account)
-    try {
-      await saveTransactionToDB({
-        user_id: user.id,
-        account_id: user.account_id,
-        source: 'text',
-        data: validatedResult
-      });
-    } catch (dbError) {
-      logger.error({
-        event: 'db_save_error',
-        from,
-        error: dbError.message,
-        stack: dbError.stack,
-        fallbackData: validatedResult
-      });
-  
-      await redisClient.publisher.rPush('failed:transactions', JSON.stringify({
-        from,
-        source: 'text',
-        data: validatedResult,
-        timestamp: Date.now()
-      }));
-      
-    }
-
-    const responseMessage = `✅ Transaksi dicatat!\n\n📅 Tanggal: ${formatDate(validatedResult.date)}\n📋 Kategori: ${validatedResult.category}\n💰 Nominal: ${formatCurrency(validatedResult.amount)}\n📝 Keterangan: ${validatedResult.description}`;
-
-    logger.info({
-      event: 'formatted_response',
-      message: responseMessage,
-      validated_data: validatedResult
-    });
-
+    // If confidence is too low for any intent, ask for clarification
     await redisClient.publish('whatsapp-response', JSON.stringify({
       to: from,
-      message: responseMessage
+      message: '❓ Mohon berikan detail lebih spesifik tentang apa yang Anda inginkan.'
     }));
 
-    return validatedResult;
-  } catch (err) {
-    logger.error(`Gagal memproses text dari ${from}:`, {
-      error: err.message,
-      stack: err.stack,
-      content: text
+  } catch (error) {
+    logger.error({
+      event: 'text_processing_error',
+      from,
+      error: error.message,
+      stack: error.stack,
+      response: error.response?.data
     });
-    await redisClient.publish('whatsapp-response', JSON.stringify({
-      to: from,
-      message: '❌ Maaf, terjadi kesalahan saat memproses pesan Anda.'
-    }));
-    throw err;
+
+    // Check if it's an AI service error
+    if (error.response?.status === 503) {
+      await redisClient.publish('whatsapp-response', JSON.stringify({
+        to: from,
+        message: '🔄 Maaf, layanan AI sedang sibuk. Mohon coba lagi dalam beberapa saat.'
+      }));
+    } else {
+      await redisClient.publish('whatsapp-response', JSON.stringify({
+        to: from,
+        message: '❌ Maaf, terjadi kesalahan saat memproses pesan Anda. Mohon coba lagi nanti.'
+      }));
+    }
   }
+}
+
+function formatTransactionResponse(transaction) {
+  const emoji = transaction.type === 'income' ? '💰' : '💸';
+  const typeText = transaction.type === 'income' ? 'Pemasukan' : 'Pengeluaran';
+  
+  let response = `✅ Transaksi berhasil dicatat!\n\n`;
+  response += `${emoji} ${typeText}\n`;
+  response += `📝 Deskripsi: ${transaction.description}\n`;
+  response += `💵 Jumlah: Rp${transaction.amount.toLocaleString('id-ID')}\n`;
+  
+  if (transaction.category && transaction.category !== 'Lainnya') {
+    response += `🏷️ Kategori: ${transaction.category}\n`;
+  }
+  
+  if (transaction.merchant) {
+    response += `🏪 Merchant: ${transaction.merchant}\n`;
+  }
+  
+  return response;
 }

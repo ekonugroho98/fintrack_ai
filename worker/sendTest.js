@@ -10,37 +10,37 @@ await redis.connect();
 
 // Test messages dengan berbagai skenario
 const testMessages = [
-  // 1. Transaksi Makanan & Minuman
+  // 1. Transaksi Makanan & Minuman (Format Standar)
   {
     type: 'text',
     data: {
       from: '6281234567890',
       messageId: 'test123',
-      text: 'saya beli ayam geprek 25 ribu',
+      text: 'Saya beli makan siang Rp 50.000',
       timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
+      pushName: 'Test User'
     }
   },
-  // 2. Transaksi Transportasi
+  // 2. Transaksi dengan Merchant
   {
     type: 'text',
     data: {
       from: '6281234567890',
       messageId: 'test124',
-      text: 'grab dari rumah ke kantor 45rb',
+      text: 'Belanja di Indomaret Rp 150.000',
       timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
+      pushName: 'Test User'
     }
   },
-  // 3. Transaksi Belanja
+  // 3. Transaksi Pemasukan
   {
     type: 'text',
     data: {
       from: '6281234567890',
       messageId: 'test125',
-      text: 'belanja di indomaret 150rb untuk kebutuhan bulanan',
+      text: 'Dapat gaji Rp 5.000.000',
       timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
+      pushName: 'Test User'
     }
   },
   // 4. Transaksi Tagihan
@@ -49,147 +49,59 @@ const testMessages = [
     data: {
       from: '6281234567890',
       messageId: 'test126',
-      text: 'bayar listrik 350rb',
+      text: 'Bayar listrik Rp 200.000',
       timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
+      pushName: 'Test User'
     }
   },
-  // 5. Transaksi Hiburan
+  // 5. Transaksi Transfer
   {
     type: 'text',
     data: {
       from: '6281234567890',
       messageId: 'test127',
-      text: 'nonton film di XXI 75rb',
+      text: 'Transfer ke teman Rp 100.000',
       timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 6. Transaksi Kesehatan
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test128',
-      text: 'cek kesehatan di RS 500rb',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 7. Transaksi Pendidikan
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test129',
-      text: 'bayar SPP kuliah 2.5jt',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 8. Transaksi Investasi
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test130',
-      text: 'beli saham BBCA 10 lot',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 9. Transaksi Gaji
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test131',
-      text: 'terima gaji 8jt',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 10. Transaksi Tabungan
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test132',
-      text: 'setor tabungan 1jt',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 11. Transaksi Makanan (Restoran)
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test133',
-      text: 'makan di Sate Khas Senayan 350rb',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 12. Transaksi Transportasi (Tol)
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test134',
-      text: 'bayar tol JORR 15rb',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 13. Transaksi Belanja (Online)
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test135',
-      text: 'beli baju di Tokopedia 250rb',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 14. Transaksi Tagihan (Internet)
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test136',
-      text: 'bayar paket internet 300rb',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
-    }
-  },
-  // 15. Transaksi Hiburan (Konser)
-  {
-    type: 'text',
-    data: {
-      from: '6281234567890',
-      messageId: 'test137',
-      text: 'beli tiket konser Coldplay 2jt',
-      timestamp: new Date().toISOString(),
-      pushName: 'Eko Nugroho'
+      pushName: 'Test User'
     }
   }
 ];
 
-// Kirim semua test messages
-for (const message of testMessages) {
-  await redis.publish('incoming-message', JSON.stringify(message));
-  console.log('📤 Pesan test terkirim:', {
-    type: message.type,
-    messageId: message.data.messageId,
-    text: message.data.text
-  });
-  
-  // Tunggu 1 detik antara setiap message
-  await new Promise(resolve => setTimeout(resolve, 1000));
+async function sendMessage(message) {
+  try {
+    await redis.publish('incoming-message', JSON.stringify(message));
+    console.log('📤 Pesan test terkirim:', {
+      type: message.type,
+      messageId: message.data.messageId,
+      text: message.data.text
+    });
+    
+    // Tunggu 1 detik antara setiap message
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+  } catch (error) {
+    console.error('❌ Error sending message:', error);
+  }
 }
 
-console.log('✅ Semua pesan test telah terkirim');
+async function runTests() {
+  try {
+    console.log('🚀 Starting message tests...\n');
+    
+    // Send test messages
+    for (const message of testMessages) {
+      await sendMessage(message);
+    }
+    
+    console.log('\n✅ Semua pesan test telah terkirim');
+    
+  } catch (error) {
+    console.error('❌ Test failed:', error);
+    process.exit(1);
+  } finally {
+    await redis.quit();
+  }
+}
 
-await redis.quit();
+// Run tests
+runTests();

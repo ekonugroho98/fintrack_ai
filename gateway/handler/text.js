@@ -28,7 +28,9 @@ export default async function handleTextMessage(sock, msg) {
   }
 
   try {
+    // Publish message to Redis for processing
     await publish('incoming-message', JSON.stringify(payload))
+    
     logger.info({
       event: 'text_message_processed',
       from,
@@ -36,7 +38,10 @@ export default async function handleTextMessage(sock, msg) {
       timestamp: new Date().toISOString()
     })
 
-    await sock.sendMessage(from, { text: '✅ Teks kamu sedang diproses.' })
+    // Send acknowledgment to user
+    await sock.sendMessage(from, { 
+      text: '✅ Pesan kamu sedang diproses oleh AI. Mohon tunggu sebentar...' 
+    })
   } catch (error) {
     logger.error({
       event: 'text_message_error',
