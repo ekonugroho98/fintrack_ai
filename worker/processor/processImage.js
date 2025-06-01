@@ -2,7 +2,11 @@ import { isFeatureAllowed } from '../utils/userConfig.js';
 import redisClient from '../utils/redis.js';
 import { logger } from '../utils/logger.js';
 import apiClient from '../utils/apiClient.js';
-import { saveTransactionToDB } from '../utils/db.js';
+import { saveTransactionToDB, updateEmbedding } from '../utils/db.js';
+import { appendTransactionToSheet } from '../utils/sheets.js';
+
+// Add delay function
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function formatCurrency(amount) {
   const numAmount = Number(amount);
@@ -74,7 +78,15 @@ export default async function processImage(data) {
       caption
     });
 
-    const result = await apiClient.processImage(content, caption, from);
+    // Get categories from database
+    const categories = user.account?.categories || [];
+    const categoryNames = categories.map(cat => cat.name);
+
+    // Process image with categories
+    const result = await apiClient.processImageWithCategories(content, categoryNames, phoneNumber);
+    if (!result.data) {
+      throw new Error('Failed to process image');
+    }
 
     logger.info({
       event: 'ai_service_response',
@@ -88,7 +100,7 @@ export default async function processImage(data) {
     const validatedTransactions = transactions.map(transaction => ({
       date: transaction?.date || new Date().toISOString(),
       category: transaction?.category || 'Lainnya',
-      amount: transaction?.amount || 0,
+      amount: Number(transaction?.amount) || 0,
       description: transaction?.description || caption || 'Tidak ada deskripsi',
       type: transaction?.type || 'expense',
       merchant: transaction?.merchant || null
@@ -112,12 +124,85 @@ export default async function processImage(data) {
       });
 
       try {
-        await saveTransactionToDB({
+        const savedTransaction = await saveTransactionToDB({
           user_id: user.id,
           account_id: user.account_id,
           source: 'image',
           data: transaction
         });
+        
+        console.log('savedTransaction', savedTransaction);
+        
+        // Insert to spreadsheet if available
+        if (user?.account?.spreadsheet_id) {
+          try {
+            const sheetData = {
+              date: transaction.date,
+              type: transaction.type,
+              amount: Number(transaction.amount) || 0,
+              category: transaction.category,
+              description: transaction.description,
+              notes: 'From image'
+            };
+            
+            await appendTransactionToSheet(user.account.spreadsheet_id, sheetData);
+            logger.info({
+              event: 'sheet_append_success',
+              spreadsheet_id: user.account.spreadsheet_id,
+              transaction_id: savedTransaction.id
+            });
+          } catch (sheetErr) {
+            logger.error({ 
+              event: 'sheet_append_error', 
+              error: sheetErr.message,
+              spreadsheet_id: user.account.spreadsheet_id,
+              transaction_id: savedTransaction.id
+            });
+          }
+        } else {
+          logger.warn({
+            event: 'no_spreadsheet_id',
+            user_id: user.id,
+            account_id: user.account_id,
+            has_account: !!user?.account
+          });
+        }
+
+        // Generate embedding
+        try {
+          // Add delay before generating embedding
+          await delay(1000); // 1 second delay
+          
+          const embeddingContext = `Deskripsi: ${transaction.description}\nKategori: ${transaction.category}\nNominal: ${transaction.amount}\nTipe: ${transaction.type}\nMerchant: ${transaction.merchant || 'Tidak ada'}\nTanggal: ${transaction.date}`;
+          const embedding = await apiClient.generateEmbedding(embeddingContext);
+          console.log('embedding', embedding);
+          if (embedding) {
+            await updateEmbedding(savedTransaction.id, embedding);
+          }
+        } catch (embeddingError) {
+          logger.error({
+            event: "embedding_failed",
+            id: savedTransaction.id,
+            error: embeddingError.message
+          });
+          
+          // Add to retry queue without crashing
+          try {
+            await redisClient.lPush('embedding:retry_queue', JSON.stringify({
+              id: savedTransaction.id,
+              context: `Deskripsi: ${transaction.description}\nKategori: ${transaction.category}\nNominal: ${transaction.amount}\nTipe: ${transaction.type}\nMerchant: ${transaction.merchant || 'Tidak ada'}\nTanggal: ${transaction.date}`,
+              retryCount: 0,
+              lastError: embeddingError.message
+            }));
+          } catch (redisError) {
+            logger.error({
+              event: "redis_retry_queue_failed",
+              id: savedTransaction.id,
+              error: redisError.message
+            });
+            // Continue processing even if redis fails
+          }
+        }
       } catch (dbError) {
         logger.error({
           event: 'db_save_error',

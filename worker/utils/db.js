@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { logger } from './logger.js';
+import db from './db.js'; // jika file koneksi ada di lokasi yang sama
 
 dotenv.config();
 
@@ -111,6 +112,29 @@ export async function updateUserInDB(phoneNumber, updates) {
 }
 
 /**
+ * Dapatkan data account berdasarkan account_id
+ * @param {string} accountId - UUID account
+ */
+export async function getAccountFromDB(accountId) {
+  const { error, data } = await supabase
+    .from('accounts')
+    .select('*')
+    .eq('id', accountId)
+    .single();
+
+  if (error) {
+    logger.error({
+      event: 'db_get_account_error',
+      accountId,
+      error: error.message
+    });
+    throw error;
+  }
+
+  return data;
+}
+
+/**
  * Dapatkan data user berdasarkan nomor WhatsApp
  * @param {string} phoneNumber - Nomor WhatsApp user
  */
@@ -143,7 +167,24 @@ export async function getUserFromDB(phoneNumber) {
     throw new Error('Multiple rows found for phoneNumber: ' + phoneNumber);
   }
 
-  return data[0];
+  const user = data[0];
+  
+  // Jika user memiliki account_id, ambil data account
+  if (user.account_id) {
+    try {
+      const account = await getAccountFromDB(user.account_id);
+      user.account = account;
+    } catch (err) {
+      logger.error({
+        event: 'db_get_account_error',
+        accountId: user.account_id,
+        error: err.message
+      });
+      // Jangan throw error, biarkan user tetap bisa digunakan meski tanpa account
+    }
+  }
+
+  return user;
 }
 
 /**
@@ -245,6 +286,144 @@ export async function deleteTransactionByDetails({ account_id, date, amount, des
   return result;
 }
 
+export async function ensureCategoryExists(name, account_id, type = 'expense') {
+  // 1. Cari kategori global
+  let { data: categories, error } = await supabase
+    .from('categories')
+    .select('id')
+    .eq('name', name)
+    .eq('type', type)
+    .limit(1);
 
+  if (error) throw error;
+
+  let categoryId;
+  if (!categories || categories.length === 0) {
+    // Insert kategori baru
+    const { data: inserted, error: insertError } = await supabase
+      .from('categories')
+      .insert([{ name, type }])
+      .select('id');
+    if (insertError) throw insertError;
+    categoryId = inserted[0].id;
+  } else {
+    categoryId = categories[0].id;
+  }
+
+  // 2. Cek relasi kategori ke account
+  let { data: rel, error: relError } = await supabase
+    .from('account_categories')
+    .select('id')
+    .eq('account_id', account_id)
+    .eq('category_id', categoryId)
+    .limit(1);
+
+  if (relError) throw relError;
+
+  if (!rel || rel.length === 0) {
+    const { error: insertRelError } = await supabase
+      .from('account_categories')
+      .insert([{ account_id, category_id: categoryId }]);
+    if (insertRelError) throw insertRelError;
+  }
+
+  return categoryId;
+}
+
+export async function updateEmbedding(transactionId, embedding) {
+  logger.info({
+    event: 'db_update_embedding_attempt',
+    transactionId,
+    embeddingLength: embedding?.length
+  });
+
+  const { error, data } = await supabase
+    .from('transactions')
+    .update({ embedding })
+    .eq('id', transactionId)
+    .select();
+
+  if (error) {
+    logger.error({
+      event: 'db_update_embedding_error',
+      transactionId,
+      error: error.message
+    });
+    throw error;
+  }
+
+  logger.info({
+    event: 'db_update_embedding_success',
+    transactionId
+  });
+
+  return data[0];
+}
+
+export async function getCategoriesFromDB(account_id, type = 'expense') {
+  try {
+    // Coba ambil kategori dari account_categories dulu
+    let { data: categories, error } = await supabase
+      .from('categories')
+      .select(`
+        name,
+        account_categories!inner (
+          account_id
+        )
+      `)
+      .eq('account_categories.account_id', account_id)
+      .order('name');
+
+    // Jika tidak ada kategori di account_categories, ambil semua kategori
+    if (!categories || categories.length === 0) {
+      logger.info({
+        event: 'no_account_categories',
+        account_id,
+        message: 'No categories found in account_categories, fetching all categories'
+      });
+
+      const { data: allCategories, error: allError } = await supabase
+        .from('categories')
+        .select('name')
+        .order('name');
+
+      if (allError) {
+        logger.error({
+          event: 'get_all_categories_error',
+          account_id,
+          error: allError.message
+        });
+        throw allError;
+      }
+
+      categories = allCategories;
+    }
+
+    if (error) {
+      logger.error({
+        event: 'get_categories_query_error',
+        account_id,
+        error: error.message
+      });
+      throw error;
+    }
+
+    logger.info({
+      event: 'get_categories_success',
+      account_id,
+      categories_count: categories?.length,
+      categories: categories
+    });
+
+    return categories.map(cat => cat.name);
+  } catch (err) {
+    logger.error({
+      event: 'get_categories_error',
+      account_id,
+      error: err.message
+    });
+    return ['Lainnya']; // Return default category if error
+  }
+}
 
 export default supabase;

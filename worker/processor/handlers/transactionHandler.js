@@ -1,10 +1,10 @@
 import { isFeatureAllowed } from '../../utils/userConfig.js';
 import { logger } from '../../utils/logger.js';
 import apiClient from '../../utils/apiClient.js';
-import { getUserFromDB, saveTransactionToDB, getTransactionsByUser } from '../../utils/db.js';
+import { getUserFromDB, saveTransactionToDB, getTransactionsByUser, updateEmbedding, getCategoriesFromDB } from '../../utils/db.js';
 import redisClient from '../../utils/redis.js';
 import { formatCurrency, formatDate } from '../utils/formatters.js';
-import { MESSAGES } from '../utils/constants.js';
+import { appendTransactionToSheet } from '../../utils/sheets.js';
 
 export async function handleTransaction(data) {
   const { from, text, messageId, timestamp } = data;
@@ -85,8 +85,28 @@ export async function handleTransaction(data) {
 async function processTransaction(data, user) {
   const { from, text, messageId, timestamp } = data;
   try {
+    logger.info({ 
+      event: 'processing_transaction',
+      user: {
+        id: user?.id,
+        account_id: user?.account_id,
+        has_account: !!user?.account,
+        has_spreadsheet: !!user?.account?.spreadsheet_id
+      },
+      text,
+      from 
+    });
+    
+    // Get categories from database
+    const categories = await getCategoriesFromDB(user.account_id);
+    logger.info({
+      event: 'got_categories',
+      categories,
+      account_id: user.account_id
+    });
+    
     logger.info({ event: 'ai_service_request', text, from });
-    const result = await apiClient.processText(text, from);
+    const result = await apiClient.processTextWithCategories(text, from, categories);
     logger.info({ event: 'ai_service_response', raw_response: result, text_input: text, from });
 
     if (result?.message?.includes('tidak terdeteksi')) {
@@ -106,8 +126,46 @@ async function processTransaction(data, user) {
       merchant: result?.data?.merchant || null
     };
 
-    await saveTransaction(user, validatedResult, { messageId, timestamp, from, text });
+    const savedTransaction = await saveTransaction(user, validatedResult, { messageId, timestamp, from, text });
+
+    console.log('user', user);
+    console.log('account data:', user?.account);
     
+    if (user?.account?.spreadsheet_id) {
+        try {
+          // Format data sesuai dengan yang diharapkan oleh sheets.js
+          const sheetData = {
+            date: validatedResult.date,
+            type: validatedResult.type,
+            amount: validatedResult.amount,
+            category: validatedResult.category,
+            description: validatedResult.description,
+            notes: validatedResult.merchant || ''
+          };
+          
+          await appendTransactionToSheet(user.account.spreadsheet_id, sheetData);
+          logger.info({
+            event: 'sheet_append_success',
+            spreadsheet_id: user.account.spreadsheet_id,
+            transaction_id: savedTransaction.id
+          });
+        } catch (sheetErr) {
+          logger.error({ 
+            event: 'sheet_append_error', 
+            error: sheetErr.message,
+            spreadsheet_id: user.account.spreadsheet_id,
+            transaction_id: savedTransaction.id
+          });
+        }
+    } else {
+        logger.warn({
+            event: 'no_spreadsheet_id',
+            user_id: user.id,
+            account_id: user.account_id,
+            has_account: !!user?.account
+        });
+    }
+        
     const responseMessage = `✅ Transaksi dicatat!\n\n📅 Tanggal: ${formatDate(validatedResult.date)}\n📋 Kategori: ${validatedResult.category}\n💰 Nominal: ${formatCurrency(validatedResult.amount)}\n📝 Keterangan: ${validatedResult.description}`;
 
     await redisClient.publish('whatsapp-response', JSON.stringify({
@@ -115,7 +173,33 @@ async function processTransaction(data, user) {
       message: responseMessage
     }));
 
-    return validatedResult;
+    const embeddingContext = [
+      `Deskripsi: ${validatedResult.description}`,
+      `Kategori: ${validatedResult.category}`,
+      `Nominal: ${validatedResult.amount}`,
+      `Tipe: ${validatedResult.type}`,
+      `Merchant: ${validatedResult.merchant || '-'}`,
+      `Tanggal: ${validatedResult.date}`
+    ].join('\n');
+
+    apiClient.generateEmbedding(embeddingContext)
+      .then(async (embedding) => {
+        return updateEmbedding(savedTransaction.id, embedding);
+      })
+      .catch(async (err) => {
+        logger.warn({
+          event: 'embedding_failed',
+          id: savedTransaction.id,
+          error: err.message
+        });
+
+        await redisClient.publisher.rPush('embedding:retry_queue', JSON.stringify({
+          transactionId: savedTransaction.id,
+          context: embeddingContext
+        }));
+      });
+
+    return savedTransaction;
   } catch (error) {
     logger.error({
       event: 'transaction_processing_error',
@@ -211,12 +295,13 @@ async function saveTransaction(user, validatedResult, metadata) {
   });
 
   try {
-    await saveTransactionToDB({
+    const savedTransaction = await saveTransactionToDB({
       user_id: user.id,
       account_id: user.account_id,
       source: 'text',
       data: validatedResult
     });
+    return savedTransaction;
   } catch (dbError) {
     logger.error({
       event: 'db_save_error',

@@ -2,7 +2,8 @@ import { isFeatureAllowed } from '../utils/userConfig.js';
 import redisClient from '../utils/redis.js';
 import { logger } from '../utils/logger.js';
 import apiClient from '../utils/apiClient.js';
-import { saveTransactionToDB } from '../utils/db.js';
+import { saveTransactionToDB, updateEmbedding } from '../utils/db.js';
+import { appendTransactionToSheet } from '../utils/sheets.js';
 
 export default async function processVoice(data) {
   const { from, content, messageId, timestamp, mimetype, duration } = data;
@@ -54,6 +55,70 @@ export default async function processVoice(data) {
         from,
         saved
       });
+
+      // Insert to spreadsheet if available
+      if (user?.account?.spreadsheet_id) {
+        try {
+          const sheetData = {
+            date: result?.data?.date || new Date().toISOString(),
+            type: result?.data?.type || 'expense',
+            amount: Number(result?.data?.amount) || 0,
+            category: result?.data?.category || 'Lainnya',
+            description: result?.data?.description || '',
+            notes: result?.data?.merchant || ''
+          };
+          
+          await appendTransactionToSheet(user.account.spreadsheet_id, sheetData);
+          logger.info({
+            event: 'sheet_append_success',
+            spreadsheet_id: user.account.spreadsheet_id,
+            transaction_id: saved.id
+          });
+        } catch (sheetErr) {
+          logger.error({ 
+            event: 'sheet_append_error', 
+            error: sheetErr.message,
+            spreadsheet_id: user.account.spreadsheet_id,
+            transaction_id: saved.id
+          });
+        }
+      } else {
+        logger.warn({
+          event: 'no_spreadsheet_id',
+          user_id: user.id,
+          account_id: user.account_id,
+          has_account: !!user?.account
+        });
+      }
+
+      // Generate and update embedding
+      if (saved.id && result?.data) {
+        const embeddingContext = [
+          `Deskripsi: ${result.data.description || ''}`,
+          `Kategori: ${result.data.category || 'Lainnya'}`,
+          `Nominal: ${result.data.amount || 0}`,
+          `Tipe: ${result.data.type || 'expense'}`,
+          `Merchant: ${result.data.merchant || '-'}`,
+          `Tanggal: ${result.data.date || new Date().toISOString()}`
+        ].join('\n');
+
+        apiClient.generateEmbedding(embeddingContext)
+          .then(async (embedding) => {
+            return updateEmbedding(saved.id, embedding);
+          })
+          .catch(async (err) => {
+            logger.warn({
+              event: 'embedding_failed',
+              id: saved.id,
+              error: err.message
+            });
+            
+            await redisClient.rPush('embedding:retry_queue', JSON.stringify({
+              transactionId: saved.id,
+              context: embeddingContext
+            }));
+          });
+      }
     } catch (dbError) {
       logger.error({
         event: 'db_save_error',

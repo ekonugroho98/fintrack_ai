@@ -12,6 +12,10 @@ export default async function processText(data) {
   if (text.toUpperCase().startsWith('INVITE#')) {
     return handleInvite(data);
   }
+
+  if (text.toUpperCase().startsWith('INPUT KATEGORI:')) {
+    return handleCategory(data);  // 🆕 Handler baru
+  }
   
   return handleTransaction(data);
 }

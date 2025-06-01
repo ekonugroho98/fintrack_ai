@@ -4,6 +4,7 @@ import { fileFromPath } from 'formdata-node/file-from-path';
 import { logger } from './logger.js';
 import CircuitBreaker from './circuitBreaker.js';
 import { createClient } from 'redis';
+import axios from 'axios';
 
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8000';
 
@@ -303,6 +304,141 @@ class ApiClient {
       });
       return false;
     }
+  }
+
+  async generateEmbedding(description) {
+    return this.retry(async () => {
+      const url = `${this.baseUrl}/api/generate_embedding`;
+      logger.info({
+        event: 'api_request',
+        method: 'POST',
+        url,
+        endpoint: '/api/generate_embedding',
+        descriptionLength: description.length
+      });
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: description })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error({
+          event: 'embedding_request_failed',
+          status: response.status,
+          error: errorText
+        });
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      const result = await response.json();
+      logger.info({
+        event: 'embedding_generated',
+        message: 'Embedding generated successfully',
+        dimensions: result.embedding.length
+      });
+
+      return result.embedding;
+    });
+  }
+
+  async processTextWithCategories(text, from, categories = null) {
+    return this.retry(async () => {
+      try {
+        const url = `${this.baseUrl}/api/process-text`;
+        logger.info({
+          event: 'api_request',
+          method: 'POST',
+          url,
+          endpoint: '/api/process-text',
+          from,
+          hasCategories: !!categories
+        });
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text,
+            categories,
+            phone_number: from
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          const error = new Error(`HTTP ${response.status}: ${errorText}`);
+          error.status = response.status;
+          throw error;
+        }
+
+        const result = await response.json();
+        logger.info({
+          event: 'text_processed_with_categories',
+          message: 'Text processed successfully with categories',
+          from,
+          textLength: text.length,
+          categoriesCount: categories?.length
+        });
+        
+        return result;
+      } catch (error) {
+        logger.error({
+          event: 'text_processing_error',
+          message: 'Failed to process text with categories',
+          from,
+          error: error.message,
+          status: error.status
+        });
+        throw error;
+      }
+    });
+  }
+
+  async processImageWithCategories(imageBuffer, categories, phoneNumber) {
+    const formData = new FormData();
+    formData.append('image', new Blob([imageBuffer]), 'image.jpg');
+    if (categories) {
+      formData.append('categories', JSON.stringify(categories));
+    }
+    if (phoneNumber) {
+      formData.append('phone_number', phoneNumber);
+    }
+
+    const response = await fetch(`${this.baseUrl}/process-image`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`);
+    }
+
+    return response.json();
+  }
+
+  async processVoiceWithCategories(voiceBuffer, categories, phoneNumber) {
+    const formData = new FormData();
+    formData.append('voice', new Blob([voiceBuffer]), 'voice.ogg');
+    if (categories) {
+      formData.append('categories', JSON.stringify(categories));
+    }
+    if (phoneNumber) {
+      formData.append('phone_number', phoneNumber);
+    }
+
+    const response = await fetch(`${this.baseUrl}/process-voice`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`);
+    }
+
+    return response.json();
   }
 }
 
