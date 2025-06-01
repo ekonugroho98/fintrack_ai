@@ -1,24 +1,28 @@
-from fastapi import APIRouter, File, UploadFile, Form, HTTPException
-from logic.gemini import extract_expense_from_voice
-from logic.utils import save_transaction
-from logic.classifier import is_transaction
-from logic.expense_extractor import extract_expense_from_text
+from fastapi import APIRouter, HTTPException, File, UploadFile, Form
+from logic.expense_extractor import extract_expense_from_voice
+import logging
+from pydantic import BaseModel
+from typing import Optional, List
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
-@router.post("/process_voice_expense_keuangan")
-async def process_voice_expense_keuangan(
+class VoiceRequest(BaseModel):
+    categories: Optional[List[str]] = None
+    phone_number: Optional[str] = None
+
+@router.post("/process-voice")
+async def process_voice(
     voice: UploadFile = File(...),
-    phone_number: str = Form(...)
+    categories: Optional[List[str]] = Form(None),
+    phone_number: Optional[str] = Form(None)
 ):
     try:
-        voice_bytes = await voice.read()
-        text = extract_expense_from_voice(voice_bytes)
-        if not is_transaction(text):
-            return {"message": "Voice note tidak mengandung transaksi keuangan."}
-
-        result = extract_expense_from_text(text)
-        save_transaction(phone_number, result)
-        return {"message": "Voice berhasil diproses", "data": result}
+        logger.info("Processing voice message")
+        content = await voice.read()
+        result = extract_expense_from_voice(content, categories)
+        logger.info(f"Voice processed: {result}")
+        return {"status": "success", "data": result}
     except Exception as e:
+        logger.error(f"Error processing voice: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
