@@ -1,4 +1,3 @@
-import { isFeatureAllowed } from '../utils/userConfig.js';
 import redisClient from '../utils/redis.js';
 import { logger } from '../utils/logger.js';
 import apiClient from '../utils/apiClient.js';
@@ -61,7 +60,7 @@ export default async function processImage(data) {
     return;
   }
 
-  if (!isFeatureAllowed(phoneNumber, 'image')) {
+  if (!user.enable_image) {
     logger.warn(`Fitur image tidak diizinkan untuk ${from}`);
     await redisClient.publish('whatsapp-response', JSON.stringify({
       to: from,

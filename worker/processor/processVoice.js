@@ -1,4 +1,3 @@
-import { isFeatureAllowed } from '../utils/userConfig.js';
 import redisClient from '../utils/redis.js';
 import { logger } from '../utils/logger.js';
 import apiClient from '../utils/apiClient.js';
@@ -22,7 +21,7 @@ export default async function processVoice(data) {
     return;
   }
 
-  if (!isFeatureAllowed(phoneNumber, 'voice')) {
+  if (!user.enable_voice) {
     logger.warn(`Fitur voice tidak diizinkan untuk ${from}`);
     return;
   }

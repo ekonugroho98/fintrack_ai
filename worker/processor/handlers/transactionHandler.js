@@ -1,4 +1,3 @@
-import { isFeatureAllowed } from '../../utils/userConfig.js';
 import { logger } from '../../utils/logger.js';
 import apiClient from '../../utils/apiClient.js';
 import { getUserFromDB, saveTransactionToDB, getTransactionsByUser, updateEmbedding, getCategoriesFromDB } from '../../utils/db.js';
@@ -22,7 +21,7 @@ export async function handleTransaction(data) {
     throw err;
   }
 
-  if (!isFeatureAllowed(phoneNumber, 'text')) {
+  if (!user.enable_text) {
     logger.warn(`Fitur text tidak diizinkan untuk ${from}`);
     await redisClient.publish('whatsapp-response', JSON.stringify({
       to: from,

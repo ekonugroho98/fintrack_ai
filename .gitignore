@@ -54,3 +54,7 @@ Thumbs.db
 
 auth
 credentials.json
+
+# Config files
+worker/config/user_config.json
+ai-service/config/user_config.json

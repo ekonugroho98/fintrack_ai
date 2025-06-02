@@ -65,6 +65,23 @@ WORKER_PORT=3100
 }
 ```
 
+### User Config
+File konfigurasi user berada di `config/user_config.json`. File ini berisi konfigurasi untuk:
+- Nomor yang diizinkan untuk mendaftarkan user baru (`allowed_numbers`)
+- Nomor yang digunakan untuk testing (`test_numbers`)
+
+Untuk setup:
+1. Copy file contoh konfigurasi:
+```bash
+cp config/user_config.example.json config/user_config.json
+```
+
+2. Sesuaikan konfigurasi sesuai kebutuhan:
+- Untuk production: tambahkan nomor admin ke `allowed_numbers`
+- Untuk development: tambahkan nomor testing ke `test_numbers`
+
+Note: File `user_config.json` tidak di-track oleh git karena bisa berbeda antara environment.
+
 ---
 
 ## ▶️ Menjalankan Manual (Local)

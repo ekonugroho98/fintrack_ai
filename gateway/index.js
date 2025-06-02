@@ -10,6 +10,7 @@ import pino from 'pino'
 import NodeCache from 'node-cache'
 import qrcode from 'qrcode-terminal'
 import { subscribe } from './utils/redis.js'
+import { isTestNumber } from '../worker/utils/userConfig.js'
 
 import handleTextMessage from './handler/text.js'
 import handleImageMessage from './handler/image.js'
@@ -128,6 +129,16 @@ async function startBot() {
       if (!msg.message || msg.key.fromMe) return
 
       const from = jidNormalizedUser(msg.key.remoteJid)
+      
+      // Check if message is from test number
+      if (!isTestNumber(from)) {
+        logger.info({
+          event: 'message_skipped',
+          from,
+          reason: 'not_test_number'
+        });
+        return;
+      }
       
       // Check rate limit
       if (!checkRateLimit(from)) {
