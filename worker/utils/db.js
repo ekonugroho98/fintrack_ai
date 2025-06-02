@@ -12,6 +12,8 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Supabase URL dan SERVICE_ROLE_KEY harus diatur di .env');
 }
 
+logger.info(`Connecting to Supabase at: ${SUPABASE_URL}`);
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /**

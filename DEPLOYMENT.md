@@ -49,12 +49,6 @@ cd aiagent-keuangan
 
 Create a `.env` file in the root directory with the following variables:
 
-```env
-# Database
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_secure_password
-POSTGRES_DB=ai_service
-
 # Redis
 REDIS_PASSWORD=your_secure_redis_password
 

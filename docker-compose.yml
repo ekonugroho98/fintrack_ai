@@ -9,10 +9,26 @@ services:
       - "8001:8000"
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/ai_service
+      - ENV=development
+      - SUPABASE_URL=db
+      - SUPABASE_USER=postgres
+      - SUPABASE_PASSWORD=postgres
+      - SUPABASE_PORT=5432
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_API_KEY_2=${GEMINI_API_KEY_2}
+      - GEMINI_API_KEY_3=${GEMINI_API_KEY_3}
+      - GEMINI_MODEL=gemini-2.0-flash
+      - GEMINI_TEMPERATURE=0
+      - GEMINI_MAX_TOKENS=2048
+      - USE_REDIS_MEMORY=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
     depends_on:
-      - redis
-      - db
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
 
   worker:
     build:
@@ -20,10 +36,20 @@ services:
       dockerfile: Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/ai_service
+      - WORKER_PORT=3100
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - AI_SERVICE_URL=http://ai-service:8000
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - LOG_LEVEL=INFO
     depends_on:
-      - redis
-      - db
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
 
   gateway:
     build:
@@ -32,14 +58,25 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - AI_SERVICE_URL=http://ai-service:8000
     depends_on:
-      - ai-service
+      redis:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   db:
     image: postgres:15-alpine
@@ -51,6 +88,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 volumes:
   postgres_data: 

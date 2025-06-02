@@ -7,7 +7,7 @@ load_dotenv()
 ENV = os.getenv("ENV", "development")  # "development" or "production"
 
 # Database Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_URL = os.getenv("SUPABASE_URL_AI_SERVICE")
 SUPABASE_USER = os.getenv("SUPABASE_USER")
 SUPABASE_PASSWORD = os.getenv("SUPABASE_PASSWORD")
 SUPABASE_PORT = os.getenv("SUPABASE_PORT", "6543")

@@ -407,7 +407,7 @@ class ApiClient {
       formData.append('phone_number', phoneNumber);
     }
 
-    const response = await fetch(`${this.baseUrl}/process-image`, {
+    const response = await fetch(`${this.baseUrl}/api/process-image`, {
       method: 'POST',
       body: formData
     });

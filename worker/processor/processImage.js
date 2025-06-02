@@ -83,7 +83,8 @@ export default async function processImage(data) {
     const categoryNames = categories.map(cat => cat.name);
 
     // Process image with categories
-    const result = await apiClient.processImageWithCategories(content, categoryNames, phoneNumber);
+    const result = await apiClient.processImage(content, caption,phoneNumber);
+    logger.info({ event: 'ai_service_raw_response', result });
     if (!result.data) {
       throw new Error('Failed to process image');
     }
